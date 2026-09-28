@@ -180,3 +180,145 @@ def donut(frame, h=250):
     rate = round(100*frame["is_readmitted_30d"].mean(), 1)
     tr = go.Pie(labels=["Within 30 days","After 30 days","Not readmitted"], values=vals,
                 hole=.62, sort=False, marker=dict(colors=["#C0392B","#E0A100","#CDD7DD"]),
+                textinfo="percent",
+                hovertemplate="%{label}<br>%{value:,} (%{percent})<extra></extra>")
+    lay = base_layout(h, legend=True)
+    lay.margin = dict(t=8,r=8,b=8,l=8)
+    lay.legend = dict(orientation="h", y=-.06, font=dict(size=10))
+    lay.annotations = [dict(text=f"<b>{rate}%</b><br><span style='font-size:10px;color:{INK_SOFT}'>&lt;30 days</span>",
+                            showarrow=False, font=dict(size=20, color=INK))]
+    return go.Figure(tr, lay)
+
+
+# ===========================================================================
+# HEADER
+# ===========================================================================
+st.markdown('<h1 class="title">🏥 Hospital Readmission &amp; Length-of-Stay Analytics</h1>',
+            unsafe_allow_html=True)
+st.markdown('<div class="subtitle">Who returns within 30 days of discharge — and what predicts it. '
+            '99,343 real de-identified encounters (130 US hospitals, 1999–2008).</div>',
+            unsafe_allow_html=True)
+
+# ===========================================================================
+# SIDEBAR FILTERS  (all stack together; empty = no filter)
+# ===========================================================================
+st.sidebar.header("Filters")
+st.sidebar.caption("Narrow the whole dashboard. Leave a filter empty to include everyone.")
+
+f = df.copy()
+sel_adm = st.sidebar.multiselect(
+    "Admission type", sorted(df["admission_type"].dropna().unique()), default=[],
+    help="How the visit began — Emergency, Urgent, Elective, etc.")
+sel_age = st.sidebar.multiselect(
+    "Age band", [a for a in AGE_ORDER if a in df["age_band"].unique()], default=[],
+    help="Patient age range")
+sel_gender = st.sidebar.multiselect(
+    "Gender", sorted(df["gender"].dropna().unique()), default=[],
+    help="Patient gender")
+
+if sel_adm:    f = f[f["admission_type"].isin(sel_adm)]
+if sel_age:    f = f[f["age_band"].isin(sel_age)]
+if sel_gender: f = f[f["gender"].isin(sel_gender)]
+
+st.sidebar.markdown(f"**{len(f):,}** of {len(df):,} encounters selected")
+if len(f) == 0:
+    st.warning("No encounters match these filters. Widen your selection.")
+    st.stop()
+
+# ===========================================================================
+# KPI ROW
+# ===========================================================================
+def kpi(lab, val, hero=False):
+    return f'<div class="kpi {"hero" if hero else ""}"><div class="lab">{lab}</div><div class="val">{val}</div></div>'
+
+kpis = "".join([
+    kpi("30-day readmission rate", f"{100*f['is_readmitted_30d'].mean():.1f}%", hero=True),
+    kpi("Total encounters", f"{len(f):,}"),
+    kpi("Readmissions (&lt;30d)", f"{int(f['is_readmitted_30d'].sum()):,}"),
+    kpi("Avg length of stay", f"{f['length_of_stay'].mean():.1f} d"),
+    kpi("Unique patients", f"{f['patient_nbr'].nunique():,}"),
+    kpi("Avg medications", f"{f['num_medications'].mean():.1f}"),
+])
+st.markdown(f'<div class="kpi-row">{kpis}</div>', unsafe_allow_html=True)
+
+
+def section(title, note=""):
+    n = f'<span style="color:{INK_SOFT};font-size:12px;margin-left:auto">{note}</span>' if note else ""
+    st.markdown(f'<div class="sec"><h2>{title}</h2><div class="rule"></div>{n}</div>',
+                unsafe_allow_html=True)
+
+PC = dict(use_container_width=True, config={"displayModeBar": False})
+
+# --- Section 1: Readmission drivers ----------------------------------------
+section("Readmission drivers", "30-day readmission rate by patient factor")
+c1, c2, c3 = st.columns([2, 1, 1])
+with c1:
+    st.markdown("**Readmission rate by prior inpatient visits**")
+    d = rate_table(f, "prior_band", ["0","1-2","3-5","6+"])
+    st.plotly_chart(rate_bar(f, "prior_band", ["0","1-2","3-5","6+"],
+                    label_map={"0":"0 prior","1-2":"1-2 prior","3-5":"3-5 prior","6+":"6+ prior"},
+                    h=330), **PC)
+    if len(d) >= 2 and d["rate"].iloc[0] > 0:
+        hi, lo = d["rate"].iloc[-1], d["rate"].iloc[0]
+        st.markdown(f'<div class="insight">Patients with <b>6+ prior admissions</b> are readmitted '
+                    f'<b>{hi/lo:.1f}×</b> as often as those with none ({hi}% vs {lo}%).</div>',
+                    unsafe_allow_html=True)
+with c2:
+    st.markdown("**By age band**")
+    st.plotly_chart(rate_bar(f, "age_band", AGE_ORDER, h=330), **PC)
+with c3:
+    st.markdown("**By number of diagnoses**")
+    fr = f.copy(); fr["ndx"] = fr["number_diagnoses"].clip(upper=9)
+    st.plotly_chart(rate_line(fr, "ndx", order=sorted(fr["ndx"].unique()), h=330), **PC)
+
+# --- Section 2: Clinical factors -------------------------------------------
+section("Clinical factors")
+c1, c2, c3, c4 = st.columns(4)
+with c1:
+    st.markdown("**By medication count**")
+    st.plotly_chart(rate_bar(f, "med_band", ["1-10","11-20","21-30","31+"]), **PC)
+with c2:
+    st.markdown("**By A1C test result**")
+    st.plotly_chart(rate_bar(f, "a1c_result", min_n=50), **PC)
+with c3:
+    st.markdown("**By medication change**")
+    st.plotly_chart(rate_bar(f, "med_changed",
+                    label_map={"Ch":"Changed","No":"No change"}), **PC)
+with c4:
+    st.markdown("**By discharge disposition**")
+    st.plotly_chart(rate_bar(f, "discharge_disposition", min_n=400, horizontal=True), **PC)
+
+# --- Section 3: Length of stay ---------------------------------------------
+section("Length of stay")
+c1, c2, c3 = st.columns([2, 1, 1])
+with c1:
+    st.markdown("**Length of stay distribution**")
+    los = f["length_of_stay"].clip(1,14).value_counts().reindex(range(1,15)).fillna(0)
+    fig = go.Figure(go.Bar(x=[str(i) for i in range(1,15)], y=los.values, marker_color=TEAL,
+                    hovertemplate="%{x} days<br>%{y:,} encounters<extra></extra>"),
+                    base_layout(300))
+    st.plotly_chart(fig, **PC)
+with c2:
+    st.markdown("**Readmission rate by length of stay**")
+    st.plotly_chart(rate_line(f, "los_band", ["1-2","3-4","5-7","8-14"], h=300), **PC)
+with c3:
+    st.markdown("**Readmission mix**")
+    st.plotly_chart(donut(f, h=300), **PC)
+
+# --- Section 4: Population served ------------------------------------------
+section("Population served")
+c1, c2, c3 = st.columns([1, 1, 2])
+with c1:
+    st.markdown("**Encounter volume by age**")
+    st.plotly_chart(vol_bar(f, "age_band", AGE_ORDER), **PC)
+with c2:
+    st.markdown("**Readmission rate by gender**")
+    st.plotly_chart(rate_bar(f, "gender", min_n=50), **PC)
+with c3:
+    st.markdown("**Top admitting specialties by volume**")
+    st.plotly_chart(vol_bar(f.dropna(subset=["medical_specialty"]),
+                    "medical_specialty", horizontal=True, top=8), **PC)
+
+st.caption("Source: Diabetes 130-US Hospitals dataset (UCI ML Repository), de-identified, "
+           "1999–2008. Encounters ending in death or hospice are excluded from readmission "
+           "analysis. Built with Python, SQL, and Plotly.")
