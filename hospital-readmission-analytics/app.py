@@ -8,6 +8,7 @@ Run locally:   streamlit run app.py
 """
 
 from pathlib import Path
+import re
 import numpy as np
 import pandas as pd
 import plotly.graph_objects as go
@@ -36,6 +37,24 @@ st.set_page_config(page_title="Hospital Readmission Analytics",
 DATA = Path(__file__).parent / "data" / "processed" / "analytics_encounters.csv"
 AGE_ORDER = ["[0-10)","[10-20)","[20-30)","[30-40)","[40-50)",
              "[50-60)","[60-70)","[70-80)","[80-90)","[90-100)"]
+
+# Split jammed CamelCase names, e.g. "InternalMedicine" -> "Internal Medicine".
+def prettify(s):
+    return re.sub(r'(?<=[a-z])(?=[A-Z])', ' ', str(s))
+
+# Long discharge-disposition descriptions -> concise, readable labels.
+DISPO_LABELS = {
+    "Discharged to home": "Home",
+    "Discharged/transferred to SNF": "Skilled nursing (SNF)",
+    "Discharged/transferred to home with home health service": "Home + home health",
+    "Discharged/transferred to another short term hospital": "Short-term hospital",
+    "Discharged/transferred to another rehab fac including rehab units of a hospital .": "Rehab facility",
+    "Discharged/transferred to another type of inpatient care institution": "Other inpatient care",
+    "Not Mapped": "Not mapped",
+    "Discharged/transferred to ICF": "Intermediate care (ICF)",
+    "Left AMA": "Left AMA",
+    "Discharged/transferred to a long term care hospital.": "Long-term care hospital",
+}
 
 # --- Inject CSS -------------------------------------------------------------
 st.markdown(f"""
@@ -119,22 +138,23 @@ def rate_table(frame, col, order=None, min_n=0):
         g = g.sort_values("rate")
     return g
 
-def base_layout(h=300, left=58, legend=False, xt="", yt="", xgrid=False, ygrid=True):
+def base_layout(h=300, left=58, legend=False, xt="", yt="", xgrid=False, ygrid=True,
+                xangle=0, bottom=54):
     return go.Layout(
         height=h, paper_bgcolor="rgba(0,0,0,0)", plot_bgcolor="rgba(0,0,0,0)",
         font=dict(family="IBM Plex Sans, sans-serif", size=12, color=INK),
-        margin=dict(t=10, r=16, b=54, l=left), showlegend=legend, bargap=.3,
+        margin=dict(t=10, r=16, b=bottom, l=left), showlegend=legend, bargap=.3,
         hoverlabel=dict(bgcolor="#132430" if not DARK else "#0B1220",
                         font=dict(color="#FFFFFF", family="IBM Plex Sans", size=12)),
         xaxis=dict(showgrid=xgrid, gridcolor=GRID, zeroline=False, linecolor=LINE,
-                   tickfont=dict(size=11),
+                   tickfont=dict(size=11), tickangle=xangle,
                    title=dict(text=xt, font=dict(size=11.5, color=INK_SOFT), standoff=8)),
         yaxis=dict(showgrid=ygrid, gridcolor=GRID, zeroline=False, tickfont=dict(size=11),
+                   automargin=True,
                    title=dict(text=yt, font=dict(size=11.5, color=INK_SOFT), standoff=8)))
 
-# Axis titles make each chart self-explanatory; tooltips (customdata) add the
-# exact counts. The rate value is carried in customdata so the % never doubles.
-def rate_bar(frame, col, order=None, min_n=0, horizontal=False, label_map=None, dim="", h=300):
+def rate_bar(frame, col, order=None, min_n=0, horizontal=False, label_map=None,
+             dim="", xangle=0, h=300):
     d = rate_table(frame, col, order, min_n)
     labels = [label_map.get(x, x) if label_map else x for x in d[col].astype(str)]
     colors = [risk_color(v) for v in d["rate"]]
@@ -145,13 +165,14 @@ def rate_bar(frame, col, order=None, min_n=0, horizontal=False, label_map=None, 
         tr = go.Bar(y=labels, x=d["rate"], orientation="h", marker_color=colors,
                     text=[f"{v}%" for v in d["rate"]], textposition="auto",
                     customdata=cd, hovertemplate=ht)
-        lay = base_layout(h, left=155, xt=MEASURE, yt=dim, xgrid=True, ygrid=False)
+        lay = base_layout(h, left=170, xt=MEASURE, yt=dim, xgrid=True, ygrid=False)
         lay.xaxis.ticksuffix = "%"
     else:
         tr = go.Bar(x=labels, y=d["rate"], marker_color=colors,
                     text=[f"{v}%" for v in d["rate"]], textposition="outside",
                     customdata=cd, hovertemplate=ht)
-        lay = base_layout(h, xt=dim, yt=MEASURE, ygrid=True)
+        lay = base_layout(h, xt=dim, yt=MEASURE, ygrid=True, xangle=xangle,
+                          bottom=72 if xangle else 54)
         lay.yaxis.ticksuffix = "%"; lay.yaxis.rangemode = "tozero"
     return go.Figure(tr, lay)
 
@@ -169,21 +190,25 @@ def rate_line(frame, col, order=None, unit="", dim="", h=300):
     lay.yaxis.ticksuffix = "%"; lay.yaxis.rangemode = "tozero"
     return go.Figure(tr, lay)
 
-def vol_bar(frame, col, order=None, horizontal=False, top=None, dim="", h=300):
+def vol_bar(frame, col, order=None, horizontal=False, top=None, dim="",
+            label_fn=None, xangle=0, h=300):
     g = frame.groupby(col, observed=True).size().reset_index(name="n")
     if order:
         g[col] = pd.Categorical(g[col], categories=order, ordered=True); g = g.sort_values(col)
     else:
         g = g.sort_values("n", ascending=True)
     if top: g = g.tail(top)
+    labels = g[col].astype(str)
+    if label_fn: labels = [label_fn(x) for x in labels]
     if horizontal:
-        tr = go.Bar(y=g[col].astype(str), x=g["n"], orientation="h", marker_color=TEAL,
+        tr = go.Bar(y=labels, x=g["n"], orientation="h", marker_color=TEAL,
                     hovertemplate="<b>%{y}</b><br>%{x:,} encounters<extra></extra>")
-        lay = base_layout(h, left=175, xt="Encounters", yt=dim, xgrid=True, ygrid=False)
+        lay = base_layout(h, left=185, xt="Encounters", yt=dim, xgrid=True, ygrid=False)
     else:
-        tr = go.Bar(x=g[col].astype(str), y=g["n"], marker_color=TEAL,
+        tr = go.Bar(x=labels, y=g["n"], marker_color=TEAL,
                     hovertemplate="<b>%{x}</b><br>%{y:,} encounters<extra></extra>")
-        lay = base_layout(h, xt=dim, yt="Encounters", ygrid=True)
+        lay = base_layout(h, xt=dim, yt="Encounters", ygrid=True, xangle=xangle,
+                          bottom=72 if xangle else 54)
     return go.Figure(tr, lay)
 
 def donut(frame, h=300):
@@ -195,7 +220,8 @@ def donut(frame, h=300):
                 marker=dict(colors=["#C0392B","#E0A100","#CDD7DD"]), textinfo="percent",
                 hovertemplate="<b>%{label}</b><br>%{value:,} encounters (%{percent})<extra></extra>")
     lay = base_layout(h, legend=True); lay.margin = dict(t=10,r=10,b=10,l=10)
-    lay.legend = dict(orientation="h", y=-.08, font=dict(size=10.5))
+    # legend text explicitly dark so the color key is readable
+    lay.legend = dict(orientation="h", y=-.08, font=dict(size=10.5, color=INK))
     lay.annotations = [dict(text=f"<b>{rate}%</b><br><span style='font-size:10px;color:{INK_SOFT}'>&lt;30 days</span>",
                             showarrow=False, font=dict(size=20, color=INK))]
     return go.Figure(tr, lay)
@@ -280,7 +306,7 @@ card(a, "Readmission rate by prior inpatient visits",
               label_map={"0":"0 prior","1-2":"1-2 prior","3-5":"3-5 prior","6+":"6+ prior"},
               dim="Prior inpatient visits", h=340), ins)
 card(b, "Readmission rate by age band",
-     rate_bar(f, "age_band", AGE_ORDER, dim="Age band", h=340))
+     rate_bar(f, "age_band", AGE_ORDER, dim="Age band", xangle=-40, h=340))
 
 a, b = st.columns(2, gap="large")
 fr = f.copy(); fr["ndx"] = fr["number_diagnoses"].clip(upper=9)
@@ -301,8 +327,9 @@ card(b, "Readmission rate by medication change",
 
 a, b = st.columns(2, gap="large")
 card(a, "Readmission rate by discharge disposition",
-     rate_bar(f, "discharge_disposition", min_n=400, horizontal=True, h=340))
-card(b, "Readmission mix", donut(f, h=340))
+     rate_bar(f, "discharge_disposition", min_n=400, horizontal=True,
+              label_map=DISPO_LABELS, h=360))
+card(b, "Readmission mix", donut(f, h=360))
 
 # --- Section 3: Length of stay ---------------------------------------------
 section("Length of stay")
@@ -319,14 +346,16 @@ card(b, "Readmission rate by length of stay",
 # --- Section 4: Population served ------------------------------------------
 section("Population served")
 a, b = st.columns(2, gap="large")
-card(a, "Encounter volume by age", vol_bar(f, "age_band", AGE_ORDER, dim="Age band", h=300))
+card(a, "Encounter volume by age",
+     vol_bar(f, "age_band", AGE_ORDER, dim="Age band", xangle=-40, h=300))
 card(b, "Readmission rate by gender", rate_bar(f, "gender", min_n=50, dim="Gender", h=300))
 
 with st.container(border=True):
     st.markdown('<div class="chart-title">Top admitting specialties by volume</div>',
                 unsafe_allow_html=True)
     st.plotly_chart(vol_bar(f.dropna(subset=["medical_specialty"]),
-                    "medical_specialty", horizontal=True, top=8, h=340), **PC)
+                    "medical_specialty", horizontal=True, top=8,
+                    label_fn=prettify, dim="Specialty", h=360), **PC)
 
 st.caption("Source: Diabetes 130-US Hospitals dataset (UCI ML Repository), de-identified, "
            "1999–2008. Encounters ending in death or hospice are excluded from readmission "
