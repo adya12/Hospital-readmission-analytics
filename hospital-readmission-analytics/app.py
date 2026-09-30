@@ -38,11 +38,10 @@ DATA = Path(__file__).parent / "data" / "processed" / "analytics_encounters.csv"
 AGE_ORDER = ["[0-10)","[10-20)","[20-30)","[30-40)","[40-50)",
              "[50-60)","[60-70)","[70-80)","[80-90)","[90-100)"]
 
-# Split jammed CamelCase names, e.g. "InternalMedicine" -> "Internal Medicine".
 def prettify(s):
+    """Split jammed CamelCase names, e.g. 'InternalMedicine' -> 'Internal Medicine'."""
     return re.sub(r'(?<=[a-z])(?=[A-Z])', ' ', str(s))
 
-# Long discharge-disposition descriptions -> concise, readable labels.
 DISPO_LABELS = {
     "Discharged to home": "Home",
     "Discharged/transferred to SNF": "Skilled nursing (SNF)",
@@ -83,12 +82,21 @@ st.markdown(f"""
   .insight {{ font-size:12.5px; color:{INK}; background:{'#26313f' if DARK else '#FBF4EC'};
               border-left:3px solid #E0A100; padding:8px 11px; border-radius:0 6px 6px 0;
               margin-top:8px; }}
+  /* Footer note — plain div with an explicit color, not st.caption, so it
+     can never inherit a different default from Streamlit's own theme. */
+  .footnote {{ font-size:12px; color:{INK_SOFT} !important; margin-top:18px;
+               padding-top:14px; border-top:1px solid {LINE}; line-height:1.6; }}
   [data-testid="stSidebar"] {{ background:{PANEL}; }}
   [data-testid="stVerticalBlockBorderWrapper"] {{
      background:{PANEL}; border:1px solid {LINE} !important; border-radius:12px;
      padding:14px 16px 8px; box-shadow:0 1px 2px rgba(19,36,48,.05); }}
+  /* Force readable text on every Streamlit-native text element, belt and
+     suspenders: markdown, captions, widget labels, sidebar. */
   [data-testid="stMarkdownContainer"], [data-testid="stMarkdownContainer"] p,
-  [data-testid="stMarkdownContainer"] strong {{ color:{INK} !important; }}
+  [data-testid="stMarkdownContainer"] strong, [data-testid="stMarkdownContainer"] span,
+  [data-testid="stCaptionContainer"], [data-testid="stCaptionContainer"] p,
+  [data-testid="stCaption"], [data-testid="stCaption"] p,
+  small {{ color:{INK} !important; }}
   [data-testid="stWidgetLabel"] p, [data-testid="stWidgetLabel"] label,
   [data-testid="stSidebar"] label, [data-testid="stSidebar"] p,
   [data-testid="stSidebar"] h1, [data-testid="stSidebar"] h2,
@@ -139,22 +147,31 @@ def rate_table(frame, col, order=None, min_n=0):
     return g
 
 def base_layout(h=300, left=58, legend=False, xt="", yt="", xgrid=False, ygrid=True,
-                xangle=0, bottom=54):
-    return go.Layout(
+                xangle=0, bottom=54, xcats=None, ycats=None):
+    lay = go.Layout(
         height=h, paper_bgcolor="rgba(0,0,0,0)", plot_bgcolor="rgba(0,0,0,0)",
         font=dict(family="IBM Plex Sans, sans-serif", size=12, color=INK),
         margin=dict(t=10, r=16, b=bottom, l=left), showlegend=legend, bargap=.3,
         hoverlabel=dict(bgcolor="#132430" if not DARK else "#0B1220",
                         font=dict(color="#FFFFFF", family="IBM Plex Sans", size=12)),
         xaxis=dict(showgrid=xgrid, gridcolor=GRID, zeroline=False, linecolor=LINE,
-                   tickfont=dict(size=11), tickangle=xangle,
+                   tickfont=dict(size=11, color=INK), tickangle=xangle,
                    title=dict(text=xt, font=dict(size=11.5, color=INK_SOFT), standoff=8)),
-        yaxis=dict(showgrid=ygrid, gridcolor=GRID, zeroline=False, tickfont=dict(size=11),
+        yaxis=dict(showgrid=ygrid, gridcolor=GRID, zeroline=False, tickfont=dict(size=11, color=INK),
                    automargin=True,
                    title=dict(text=yt, font=dict(size=11.5, color=INK_SOFT), standoff=8)))
+    # Force EVERY category label to render, regardless of column width.
+    # Without this, Plotly silently thins ticks when a chart is narrow
+    # (e.g. two charts side by side), which looks like "no labels at all".
+    if xcats is not None:
+        lay.xaxis.type = "category"; lay.xaxis.tickmode = "array"
+        lay.xaxis.tickvals = list(xcats); lay.xaxis.ticktext = list(xcats)
+    if ycats is not None:
+        lay.yaxis.type = "category"; lay.yaxis.tickmode = "array"
+        lay.yaxis.tickvals = list(ycats); lay.yaxis.ticktext = list(ycats)
+    return lay
 
-def rate_bar(frame, col, order=None, min_n=0, horizontal=False, label_map=None,
-             dim="", xangle=0, h=300):
+def rate_bar(frame, col, order=None, min_n=0, horizontal=False, label_map=None, dim="", xangle=0, h=300):
     d = rate_table(frame, col, order, min_n)
     labels = [label_map.get(x, x) if label_map else x for x in d[col].astype(str)]
     colors = [risk_color(v) for v in d["rate"]]
@@ -165,28 +182,29 @@ def rate_bar(frame, col, order=None, min_n=0, horizontal=False, label_map=None,
         tr = go.Bar(y=labels, x=d["rate"], orientation="h", marker_color=colors,
                     text=[f"{v}%" for v in d["rate"]], textposition="auto",
                     customdata=cd, hovertemplate=ht)
-        lay = base_layout(h, left=170, xt=MEASURE, yt=dim, xgrid=True, ygrid=False)
+        lay = base_layout(h, left=170, xt=MEASURE, yt=dim, xgrid=True, ygrid=False, ycats=labels)
         lay.xaxis.ticksuffix = "%"
     else:
         tr = go.Bar(x=labels, y=d["rate"], marker_color=colors,
                     text=[f"{v}%" for v in d["rate"]], textposition="outside",
                     customdata=cd, hovertemplate=ht)
         lay = base_layout(h, xt=dim, yt=MEASURE, ygrid=True, xangle=xangle,
-                          bottom=72 if xangle else 54)
+                          bottom=72 if xangle else 54, xcats=labels)
         lay.yaxis.ticksuffix = "%"; lay.yaxis.rangemode = "tozero"
     return go.Figure(tr, lay)
 
 def rate_line(frame, col, order=None, unit="", dim="", h=300):
     d = rate_table(frame, col, order)
+    labels = d[col].astype(str).tolist()
     cd = np.column_stack([d["rate"].to_numpy(), d["n"].to_numpy()])
     suf = f" {unit}" if unit else ""
     ht = ("<b>%{x}" + suf + "</b><br>%{customdata[0]:.1f}% readmitted within 30 days"
           "<br>%{customdata[1]:,} encounters<extra></extra>")
-    tr = go.Scatter(x=d[col].astype(str), y=d["rate"], mode="lines+markers",
+    tr = go.Scatter(x=labels, y=d["rate"], mode="lines+markers",
                     line=dict(color=TEAL, width=3, shape="spline"),
                     marker=dict(color=TEAL, size=7), fill="tozeroy",
                     fillcolor="rgba(14,124,134,.10)", customdata=cd, hovertemplate=ht)
-    lay = base_layout(h, xt=dim, yt=MEASURE, ygrid=True)
+    lay = base_layout(h, xt=dim, yt=MEASURE, ygrid=True, xcats=labels)
     lay.yaxis.ticksuffix = "%"; lay.yaxis.rangemode = "tozero"
     return go.Figure(tr, lay)
 
@@ -198,17 +216,17 @@ def vol_bar(frame, col, order=None, horizontal=False, top=None, dim="",
     else:
         g = g.sort_values("n", ascending=True)
     if top: g = g.tail(top)
-    labels = g[col].astype(str)
+    labels = g[col].astype(str).tolist()
     if label_fn: labels = [label_fn(x) for x in labels]
     if horizontal:
         tr = go.Bar(y=labels, x=g["n"], orientation="h", marker_color=TEAL,
                     hovertemplate="<b>%{y}</b><br>%{x:,} encounters<extra></extra>")
-        lay = base_layout(h, left=185, xt="Encounters", yt=dim, xgrid=True, ygrid=False)
+        lay = base_layout(h, left=185, xt="Encounters", yt=dim, xgrid=True, ygrid=False, ycats=labels)
     else:
         tr = go.Bar(x=labels, y=g["n"], marker_color=TEAL,
                     hovertemplate="<b>%{x}</b><br>%{y:,} encounters<extra></extra>")
         lay = base_layout(h, xt=dim, yt="Encounters", ygrid=True, xangle=xangle,
-                          bottom=72 if xangle else 54)
+                          bottom=72 if xangle else 54, xcats=labels)
     return go.Figure(tr, lay)
 
 def donut(frame, h=300):
@@ -220,7 +238,6 @@ def donut(frame, h=300):
                 marker=dict(colors=["#C0392B","#E0A100","#CDD7DD"]), textinfo="percent",
                 hovertemplate="<b>%{label}</b><br>%{value:,} encounters (%{percent})<extra></extra>")
     lay = base_layout(h, legend=True); lay.margin = dict(t=10,r=10,b=10,l=10)
-    # legend text explicitly dark so the color key is readable
     lay.legend = dict(orientation="h", y=-.08, font=dict(size=10.5, color=INK))
     lay.annotations = [dict(text=f"<b>{rate}%</b><br><span style='font-size:10px;color:{INK_SOFT}'>&lt;30 days</span>",
                             showarrow=False, font=dict(size=20, color=INK))]
@@ -334,10 +351,12 @@ card(b, "Readmission mix", donut(f, h=360))
 # --- Section 3: Length of stay ---------------------------------------------
 section("Length of stay")
 a, b = st.columns(2, gap="large")
-los = f["length_of_stay"].clip(1,14).value_counts().reindex(range(1,15)).fillna(0)
-losfig = go.Figure(go.Bar(x=[str(i) for i in range(1,15)], y=los.values, marker_color=TEAL,
+los_idx = list(range(1,15))
+los = f["length_of_stay"].clip(1,14).value_counts().reindex(los_idx).fillna(0)
+los_labels = [str(i) for i in los_idx]
+losfig = go.Figure(go.Bar(x=los_labels, y=los.values, marker_color=TEAL,
                    hovertemplate="<b>%{x} days</b><br>%{y:,} encounters<extra></extra>"),
-                   base_layout(300, xt="Length of stay (days)", yt="Encounters", ygrid=True))
+                   base_layout(300, xt="Length of stay (days)", yt="Encounters", ygrid=True, xcats=los_labels))
 card(a, "Length of stay distribution", losfig)
 card(b, "Readmission rate by length of stay",
      rate_line(f, "los_band", ["1-2","3-4","5-7","8-14"], unit="days",
@@ -357,6 +376,10 @@ with st.container(border=True):
                     "medical_specialty", horizontal=True, top=8,
                     label_fn=prettify, dim="Specialty", h=360), **PC)
 
-st.caption("Source: Diabetes 130-US Hospitals dataset (UCI ML Repository), de-identified, "
-           "1999–2008. Encounters ending in death or hospice are excluded from readmission "
-           "analysis. Built with Python, SQL, and Plotly.")
+# Footer as a styled div (not st.caption) so its color is set directly by us
+# and cannot be overridden by Streamlit's own default text styling.
+st.markdown(
+    '<div class="footnote">Source: Diabetes 130-US Hospitals dataset (UCI ML Repository), '
+    'de-identified, 1999–2008. Encounters ending in death or hospice are excluded from '
+    'readmission analysis. Built with Python, SQL, and Plotly.</div>',
+    unsafe_allow_html=True)
